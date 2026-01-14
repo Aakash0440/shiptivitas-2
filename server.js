@@ -125,9 +125,79 @@ app.put('/api/v1/clients/:id', (req, res) => {
   let clients = db.prepare('select * from clients').all();
   const client = clients.find(client => client.id === id);
 
-  /* ---------- Update code below ----------*/
-
-
+    // Validate status if provided
+    if (status) {
+      if (status !== 'backlog' && status !== 'in-progress' && status !== 'complete') {
+        return res.status(400).send({
+          message: 'Invalid status provided.',
+          long_message: 'Status must be backlog | in-progress | complete.',
+        });
+      }
+    }
+  
+    // Validate priority if provided
+    if (priority !== undefined) {
+      const { valid, messageObj } = validatePriority(priority);
+      if (!valid) {
+        return res.status(400).send(messageObj);
+      }
+    }
+  
+    const oldStatus = client.status;
+    const oldPriority = client.priority;
+  
+    // ---------- STATUS CHANGE ----------
+    if (status && status !== oldStatus) {
+      // Close gap in old lane
+      db.prepare(`
+        UPDATE clients
+        SET priority = priority - 1
+        WHERE status = ? AND priority > ?
+      `).run(oldStatus, oldPriority);
+  
+      // Push down priorities in new lane
+      db.prepare(`
+        UPDATE clients
+        SET priority = priority + 1
+        WHERE status = ?
+      `).run(status);
+  
+      // Move client to new lane at top
+      db.prepare(`
+        UPDATE clients
+        SET status = ?, priority = 1
+        WHERE id = ?
+      `).run(status, id);
+    }
+  
+    // ---------- PRIORITY CHANGE ----------
+    if (priority !== undefined && priority !== oldPriority) {
+      if (priority < oldPriority) {
+        // Moving UP
+        db.prepare(`
+          UPDATE clients
+          SET priority = priority + 1
+          WHERE status = ? AND priority >= ? AND priority < ?
+        `).run(client.status, priority, oldPriority);
+      } else {
+        // Moving DOWN
+        db.prepare(`
+          UPDATE clients
+          SET priority = priority - 1
+          WHERE status = ? AND priority <= ? AND priority > ?
+        `).run(client.status, priority, oldPriority);
+      }
+  
+      db.prepare(`
+        UPDATE clients
+        SET priority = ?
+        WHERE id = ?
+      `).run(priority, id);
+    }
+  
+    // Return updated list
+    clients = db.prepare('select * from clients order by status, priority asc').all();
+  
 
   return res.status(200).send(clients);
 });
